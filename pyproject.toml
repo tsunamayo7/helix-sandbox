@@ -1,0 +1,10 @@
+﻿[project]
+name = "helix-sandbox"
+version = "0.1.0"
+description = "Helix sandbox backends extracted from Helix AI Studio"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "docker",
+  "PyQt6",
+]
