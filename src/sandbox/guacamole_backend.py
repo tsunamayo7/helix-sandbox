@@ -1,13 +1,11 @@
-"""Helix AI Studio — GuacamoleManager
+"""helix-sandbox — GuacamoleManager
 
-Apache Guacamole (clientless remote desktop gateway) との統合バックエンド。
-RDP / VNC / SSH で接続された既存 VM をブラウザ経由でヘリックス内に埋め込む。
+Apache Guacamole (clientless remote desktop gateway) integration backend.
+Connects to existing VMs via RDP / VNC / SSH through a browser-based interface.
 
-Docker に依存しないため、Hyper-V / VirtualBox / 別 PC 上の VM に接続できる。
-QWebEngineView に Guacamole の Web クライアント URL を読み込むことで
-VirtualDesktopTab の既存 UI をほぼそのまま流用できる。
+Does not depend on Docker, so it can connect to VMs on Hyper-V / VirtualBox / remote PCs.
 
-参照: https://guacamole.apache.org/doc/gug/guacamole-rest.html
+Reference: https://guacamole.apache.org/doc/gug/guacamole-rest.html
 """
 
 import base64

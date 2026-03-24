@@ -1,25 +1,25 @@
-"""Helix AI Studio — SandboxManager
+"""helix-sandbox — SandboxManager
 
-Docker コンテナの CRUD、ファイル操作、コマンド実行を管理する。
-Docker が未インストールでも ImportError を投げずに graceful に動作する。
+Manages Docker container CRUD, file operations, and command execution.
+Gracefully handles missing Docker installation without raising ImportError.
 """
 
+import base64
 import logging
 import os
-import re
 import socket
+import threading
 import time
 from pathlib import Path
 from typing import Optional, Callable
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
-
+from .backend_base import _Signal
 from .sandbox_config import SandboxConfig, SandboxInfo, SandboxStatus
 from ..utils.subprocess_utils import run_hidden
 
 logger = logging.getLogger(__name__)
 
-# docker パッケージはオプション依存
+# docker package is an optional dependency
 try:
     import docker
     from docker.errors import DockerException, ImageNotFound, NotFound, APIError
@@ -30,35 +30,36 @@ except ImportError:
 
 
 def _find_free_port(start: int = 6080, end: int = 6180) -> int:
-    """空きポートを検索する"""
+    """Find a free port in the given range."""
     for port in range(start, end):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("127.0.0.1", port))
+                # Docker publishes to 0.0.0.0, so probing only 127.0.0.1 can
+                # miss ports that are already allocated on other interfaces.
+                s.bind(("0.0.0.0", port))
                 return port
         except OSError:
             continue
     raise RuntimeError(f"No free port found in range {start}-{end}")
 
 
-class SandboxManager(QObject):
-    """Docker コンテナの CRUD・ファイル操作・コマンド実行を管理"""
+class SandboxManager:
+    """Manages Docker container CRUD, file operations, and command execution"""
 
-    statusChanged = pyqtSignal(str)
-    outputReceived = pyqtSignal(str)
-    errorOccurred = pyqtSignal(str)
+    def __init__(self):
+        self.statusChanged = _Signal()
+        self.outputReceived = _Signal()
+        self.errorOccurred = _Signal()
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
         self._client = None
         self._active_sandbox: Optional[SandboxInfo] = None
-        self._timeout_timer: Optional[QTimer] = None
+        self._timeout_timer: Optional[threading.Timer] = None
         self._status = SandboxStatus.NONE
 
-    # ─── Docker 接続 ───
+    # --- Docker connection ---
 
     def _get_client(self):
-        """Docker クライアントを遅延初期化"""
+        """Lazy-initialize Docker client"""
         if not DOCKER_SDK_AVAILABLE:
             return None
         if self._client is None:
@@ -69,20 +70,20 @@ class SandboxManager(QObject):
             except Exception as e:
                 logger.warning(
                     f"[SandboxManager] Docker connection failed: {e}\n"
-                    "Docker Desktop / Rancher Desktop が起動していない可能性があります。"
-                    "コンテナランタイムを起動してから「🔄 更新」ボタンを押してください。"
+                    "Docker Desktop / Rancher Desktop may not be running. "
+                    "Start your container runtime and retry."
                 )
                 self._client = None
         return self._client
 
     def reset_connection(self):
-        """キャッシュ済み Docker クライアントをリセット（再接続に使用）"""
+        """Reset cached Docker client (for reconnection)"""
         self._client = None
         logger.debug("[SandboxManager] Client cache cleared (reset_connection).")
 
     @staticmethod
     def _is_docker_available_via_cli() -> bool:
-        """CLI fallback: `docker version` が成功するか確認（SDK が使えない場合の補完）"""
+        """CLI fallback: check if `docker version` succeeds"""
         try:
             result = run_hidden(
                 ["docker", "version"],
@@ -93,50 +94,48 @@ class SandboxManager(QObject):
             return False
 
     def get_docker_unavailable_reason(self) -> str:
-        """Docker が利用不可な理由を人間が読める形で返す"""
+        """Return human-readable reason why Docker is unavailable"""
         cli_ok = self._is_docker_available_via_cli()
 
         if not DOCKER_SDK_AVAILABLE:
             if cli_ok:
                 return (
-                    "docker CLI は有効ですが、Python SDK が未インストールです。\n"
-                    "一部機能（イメージ検査・削除）は CLI 経由で動作します。\n"
-                    "フル機能を使うには: pip install docker"
+                    "docker CLI is available but the Python SDK is not installed.\n"
+                    "Some features (image inspection/removal) work via CLI.\n"
+                    "For full functionality: pip install docker"
                 )
             return (
-                "Docker が利用できません。\n"
-                "Docker Desktop または Rancher Desktop をインストール・起動してください。\n"
-                "Python SDK も必要です: pip install docker"
+                "Docker is not available.\n"
+                "Install and start Docker Desktop or Rancher Desktop.\n"
+                "Python SDK is also required: pip install docker"
             )
 
         if not cli_ok:
             return (
-                "docker CLI が見つからないか、Docker エンジンが起動していません。\n"
-                "Docker Desktop または Rancher Desktop を起動してください。"
+                "docker CLI not found or Docker engine is not running.\n"
+                "Start Docker Desktop or Rancher Desktop."
             )
 
-        # CLI は OK だが SDK の接続に失敗する場合（ソケット差異など）
+        # CLI is OK but SDK connection fails (socket mismatch etc.)
         return (
-            "docker CLI は有効ですが、Python SDK の接続に失敗しています。\n"
-            "DOCKER_HOST 環境変数が正しいか確認してください。\n"
-            "Rancher Desktop の場合は Moby/dockerd エンジンを選択してください。"
+            "docker CLI is available but Python SDK connection failed.\n"
+            "Check the DOCKER_HOST environment variable.\n"
+            "For Rancher Desktop, select the Moby/dockerd engine."
         )
 
     def is_docker_available(self) -> bool:
-        """Docker が利用可能かチェック（SDK→CLI 2段フォールバック）"""
-        # 1段目: SDK で確認
+        """Check if Docker is available (SDK -> CLI two-stage fallback)"""
+        # Stage 1: SDK check
         if DOCKER_SDK_AVAILABLE:
             try:
                 client = self._get_client()
                 if client:
                     client.ping()
                     return True
-                # キャッシュが None = 前回失敗 → CLI へフォールバック
             except Exception:
-                # 接続は取れていたが ping 失敗 = ソケットが失われた（再起動等）
                 self.reset_connection()
 
-        # 2段目: CLI フォールバック（SDK 未導入 or SDK 接続失敗時）
+        # Stage 2: CLI fallback
         if self._is_docker_available_via_cli():
             logger.info("[SandboxManager] Docker available via CLI fallback (SDK unavailable/failed).")
             return True
@@ -144,8 +143,8 @@ class SandboxManager(QObject):
         return False
 
     def check_image_exists(self) -> bool:
-        """helix-sandbox:latest イメージが存在するかチェック（SDK→CLI fallback）"""
-        # 1段目: SDK
+        """Check if helix-sandbox:latest image exists (SDK -> CLI fallback)"""
+        # Stage 1: SDK
         client = self._get_client()
         if client:
             try:
@@ -154,7 +153,7 @@ class SandboxManager(QObject):
             except Exception:
                 return False
 
-        # 2段目: CLI fallback
+        # Stage 2: CLI fallback
         try:
             result = run_hidden(
                 ["docker", "image", "inspect", "helix-sandbox:latest"],
@@ -165,8 +164,8 @@ class SandboxManager(QObject):
             return False
 
     def remove_image(self, force: bool = True) -> bool:
-        """v12.6.0: helix-sandbox:latest イメージを削除（SDK→CLI fallback）"""
-        # 1段目: SDK
+        """Remove helix-sandbox:latest image (SDK -> CLI fallback)"""
+        # Stage 1: SDK
         client = self._get_client()
         if client:
             try:
@@ -176,7 +175,7 @@ class SandboxManager(QObject):
             except Exception as e:
                 logger.warning(f"[SandboxManager] SDK image removal failed: {e}")
 
-        # 2段目: CLI fallback
+        # Stage 2: CLI fallback
         try:
             args = ["docker", "rmi", "helix-sandbox:latest"]
             if force:
@@ -193,7 +192,7 @@ class SandboxManager(QObject):
         return False
 
     def build_image(self, progress_callback: Optional[Callable] = None) -> bool:
-        """Dockerfile からイメージをビルド"""
+        """Build image from Dockerfile"""
         client = self._get_client()
         if not client:
             return False
@@ -225,10 +224,10 @@ class SandboxManager(QObject):
             self.errorOccurred.emit(f"Build failed: {e}")
             return False
 
-    # ─── コンテナ CRUD ───
+    # --- Container CRUD ---
 
     def create(self, config: SandboxConfig) -> Optional[SandboxInfo]:
-        """sandbox コンテナを作成・起動"""
+        """Create and start a sandbox container"""
         client = self._get_client()
         if not client:
             self.errorOccurred.emit("Docker is not available")
@@ -237,13 +236,13 @@ class SandboxManager(QObject):
         self._set_status(SandboxStatus.CREATING)
 
         try:
-            # ポート割り当て
+            # Port allocation
             novnc_port = _find_free_port(6080, 6180)
             vnc_port = _find_free_port(5900, 5999)
 
             container_name = f"helix-sandbox-{int(time.time())}"
 
-            # Volume マウント設定
+            # Volume mount configuration
             volumes = {}
             if config.workspace_path and os.path.isdir(config.workspace_path):
                 mode = "ro" if config.mount_readonly else "rw"
@@ -252,7 +251,7 @@ class SandboxManager(QObject):
                     "mode": mode,
                 }
 
-            # 環境変数
+            # Environment variables
             environment = {
                 "DISPLAY": ":99",
                 "RESOLUTION": f"{config.resolution}x24",
@@ -260,17 +259,17 @@ class SandboxManager(QObject):
             if config.vnc_password:
                 environment["VNC_PASSWORD"] = config.vnc_password
 
-            # CPU 制限
+            # CPU limit
             nano_cpus = int(config.cpu_limit * 1e9)
 
-            # v12.0.1: network_disabled=True だとポートフォワーディングが無効化され
-            # NoVNC にアクセスできないため、最低限 bridge モードを使用する
+            # network_disabled=True disables port forwarding and prevents
+            # NoVNC access, so use bridge mode at minimum
             effective_network = config.network_mode
             if effective_network == "none":
                 effective_network = "bridge"
 
-            # host.docker.internal でコンテナ内からホストのサービス
-            # （Ollama localhost:11434 等）にアクセス可能にする
+            # Allow container to access host services (e.g. Ollama localhost:11434)
+            # via host.docker.internal
             extra_hosts = {"host.docker.internal": "host-gateway"}
 
             container = client.containers.run(
@@ -286,7 +285,7 @@ class SandboxManager(QObject):
                 extra_hosts=extra_hosts,
             )
 
-            # 起動確認 (最大10秒)
+            # Wait for container to start (max 10 seconds)
             for _ in range(20):
                 container.reload()
                 if container.status == "running":
@@ -296,7 +295,7 @@ class SandboxManager(QObject):
             if container.status != "running":
                 raise RuntimeError(f"Container failed to start: {container.status}")
 
-            # v12.0.1: NoVNC HTTP サービスの起動完了を待機（最大20秒）
+            # Wait for NoVNC HTTP service to be ready (max 20 seconds)
             import urllib.request
             for i in range(40):
                 try:
@@ -331,16 +330,23 @@ class SandboxManager(QObject):
             self._active_sandbox = info
             self._set_status(SandboxStatus.RUNNING)
 
-            # タイムアウトタイマー
+            # Timeout timer
             if config.timeout_minutes > 0:
                 self._start_timeout(config.timeout_minutes)
+
+            # Initialize workspace git for diff tracking
+            try:
+                self.execute("cd /workspace && git init && git add -A && git commit -m 'initial' --allow-empty 2>/dev/null", workdir="/workspace")
+                logger.info("[SandboxManager] Workspace git initialized for diff tracking")
+            except Exception as e:
+                logger.debug(f"[SandboxManager] Workspace git init skipped: {e}")
 
             logger.info(f"[SandboxManager] Sandbox created: {container_name} (NoVNC: {novnc_port})")
             return info
 
         except Exception as e:
             logger.error(f"[SandboxManager] Create failed: {e}")
-            # 残骸コンテナを掃除
+            # Clean up failed container
             try:
                 client = self._get_client()
                 if client:
@@ -354,7 +360,7 @@ class SandboxManager(QObject):
             return None
 
     def execute(self, command: str, workdir: str = "/workspace") -> dict:
-        """sandbox 内でコマンド実行"""
+        """Execute command inside sandbox"""
         container = self._get_container()
         if not container:
             return {"exit_code": -1, "stdout": "", "stderr": "Sandbox not running"}
@@ -372,7 +378,7 @@ class SandboxManager(QObject):
             return {"exit_code": -1, "stdout": "", "stderr": str(e)}
 
     def write_file(self, path: str, content: str) -> dict:
-        """sandbox 内にファイルを書き込む"""
+        """Write a file inside the sandbox"""
         if not self._validate_sandbox_path(path):
             return {"error": "Invalid path: path traversal detected"}
 
@@ -381,9 +387,14 @@ class SandboxManager(QObject):
             return {"error": "Sandbox not running"}
 
         try:
-            # Python を使って安全にファイル書き込み
-            escaped = content.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n")
-            cmd = f"python3 -c \"import pathlib; p=pathlib.Path('{path}'); p.parent.mkdir(parents=True, exist_ok=True); p.write_text('{escaped}')\""
+            # Base64 avoids shell quoting issues with newlines and quotes.
+            encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+            cmd = (
+                "python3 -c \"import base64, pathlib; "
+                f"p=pathlib.Path({path!r}); "
+                "p.parent.mkdir(parents=True, exist_ok=True); "
+                f"p.write_text(base64.b64decode('{encoded}').decode('utf-8'), encoding='utf-8')\""
+            )
             result = container.exec_run(cmd=["bash", "-c", cmd], workdir="/workspace")
             if result.exit_code == 0:
                 return {"success": True, "path": path}
@@ -394,7 +405,7 @@ class SandboxManager(QObject):
             return {"error": str(e)}
 
     def read_file(self, path: str) -> dict:
-        """sandbox 内のファイルを読む"""
+        """Read a file inside the sandbox"""
         if not self._validate_sandbox_path(path):
             return {"error": "Invalid path: path traversal detected"}
 
@@ -404,11 +415,11 @@ class SandboxManager(QObject):
         return {"error": result["stderr"] or "File not found"}
 
     def list_dir(self, path: str = "/workspace") -> dict:
-        """sandbox 内のディレクトリ一覧（構造化データ）"""
+        """List directory contents inside sandbox (structured data)"""
         if not self._validate_sandbox_path(path):
             return {"error": "Invalid path: path traversal detected"}
 
-        # JSON 形式で取得: name, type(file/dir/link), size, permissions
+        # Get JSON format: name, type(file/dir/link), size, permissions
         script = (
             f"python3 -c \""
             f"import os, json, stat; "
@@ -428,39 +439,65 @@ class SandboxManager(QObject):
                 return data
             except Exception as e:
                 logger.debug(f"[SandboxManager] list_directory JSON parse fallback: {e}")
-            # フォールバック: 生テキスト
+            # Fallback: raw text
             return {"ok": True, "listing": result["stdout"], "path": path}
         return {"error": result["stderr"] or "Directory not found"}
 
     def screenshot(self) -> Optional[bytes]:
-        """sandbox 内のスクリーンショットを PNG で取得"""
+        """Capture sandbox desktop screenshot (PNG) with GUI readiness wait."""
         container = self._get_container()
         if not container:
             return None
 
-        try:
-            result = container.exec_run(
-                cmd=["bash", "-c", "import -window root -display :99 png:- 2>/dev/null"],
-                demux=True,
-            )
-            if result.exit_code == 0 and result.output[0]:
-                return result.output[0]
-        except Exception as e:
-            logger.debug(f"[SandboxManager] Screenshot failed: {e}")
+        # Multiple capture methods to maximize compatibility
+        capture_commands = [
+            # Method 1: xdotool + import (waits for active window)
+            "xdotool search --onlyvisible --name '' >/dev/null 2>&1; "
+            "import -window root -display :99 png:- 2>/dev/null",
+            # Method 2: scrot (if available)
+            "DISPLAY=:99 scrot -o /tmp/_screenshot.png 2>/dev/null && cat /tmp/_screenshot.png",
+            # Method 3: xwd + convert
+            "xwd -root -display :99 2>/dev/null | convert xwd:- png:- 2>/dev/null",
+            # Method 4: plain import (fallback)
+            "import -window root -display :99 png:- 2>/dev/null",
+        ]
+
+        for attempt in range(8):
+            cmd = capture_commands[min(attempt, len(capture_commands) - 1)]
+            try:
+                result = container.exec_run(
+                    cmd=["bash", "-c", cmd],
+                    demux=True,
+                )
+                if result.exit_code == 0 and result.output[0]:
+                    png_data = result.output[0]
+                    # If image is too small, desktop may not be ready yet
+                    if len(png_data) > 2048 or attempt >= 7:
+                        return png_data
+                    logger.debug(f"[SandboxManager] Screenshot too small ({len(png_data)}b), retrying ({attempt+1}/8)")
+                    time.sleep(2)
+            except Exception as e:
+                logger.debug(f"[SandboxManager] Screenshot attempt {attempt+1} failed: {e}")
+                time.sleep(2)
         return None
 
     def get_diff(self) -> str:
-        """sandbox 内の変更差分を取得"""
+        """Get change diff inside sandbox"""
         container = self._get_container()
         if not container:
             return ""
 
-        # git repo の場合は git diff を使用
-        result = self.execute("git diff --no-color 2>/dev/null || diff -rq /workspace /workspace-original 2>/dev/null || echo 'No diff available'")
+        # Use git diff if git is initialized
+        result = self.execute("cd /workspace && git add -A && git diff --cached --no-color 2>/dev/null || echo ''")
+        diff_text = result.get("stdout", "").strip()
+        if diff_text:
+            return diff_text
+        # Fallback
+        result = self.execute("diff -rq /workspace /workspace-original 2>/dev/null || echo 'No diff available'")
         return result.get("stdout", "")
 
     def snapshot(self) -> Optional[str]:
-        """現在の状態をスナップショット (docker commit)"""
+        """Take a snapshot of current state (docker commit)"""
         container = self._get_container()
         if not container:
             return None
@@ -474,7 +511,7 @@ class SandboxManager(QObject):
             return None
 
     def destroy(self) -> bool:
-        """sandbox コンテナ + volume を破棄"""
+        """Destroy sandbox container and volumes"""
         container = self._get_container()
         if not container:
             self._active_sandbox = None
@@ -493,26 +530,26 @@ class SandboxManager(QObject):
         self._set_status(SandboxStatus.NONE)
         return True
 
-    # ─── 状態管理 ───
+    # --- State management ---
 
     def get_status(self) -> SandboxStatus:
-        """現在の sandbox 状態"""
+        """Get current sandbox status"""
         return self._status
 
     def get_info(self) -> Optional[SandboxInfo]:
-        """稼働中の sandbox 情報"""
+        """Get info about the running sandbox"""
         return self._active_sandbox
 
     def get_vnc_url(self) -> Optional[str]:
-        """NoVNC の接続 URL"""
+        """Get NoVNC connection URL"""
         if self._active_sandbox:
             return self._active_sandbox.vnc_url
         return None
 
-    # ─── 内部ヘルパー ───
+    # --- Internal helpers ---
 
     def _get_container(self):
-        """アクティブなコンテナオブジェクトを取得"""
+        """Get the active container object"""
         if not self._active_sandbox:
             return None
         client = self._get_client()
@@ -527,38 +564,36 @@ class SandboxManager(QObject):
         return None
 
     def _set_status(self, status: SandboxStatus):
-        """状態を更新してシグナル発火"""
+        """Update status and fire signal"""
         self._status = status
         self.statusChanged.emit(status.value)
 
     def _validate_sandbox_path(self, path: str) -> bool:
-        """パストラバーサル検査（sandbox 内の POSIX パスとして検証）"""
-        # ".." を含むパスを拒否
+        """Path traversal check (validates as POSIX path inside sandbox)"""
         import posixpath
         normalized = posixpath.normpath(path)
         if ".." in normalized.split("/"):
             return False
-        # 絶対パスの場合は /workspace 配下であること
+        # Absolute paths must be under /workspace
         if path.startswith("/") and not normalized.startswith("/workspace"):
             return False
         return True
 
     def _start_timeout(self, minutes: int):
-        """タイムアウトタイマー開始"""
+        """Start timeout timer"""
         self._stop_timeout()
-        self._timeout_timer = QTimer(self)
-        self._timeout_timer.setSingleShot(True)
-        self._timeout_timer.timeout.connect(self._on_timeout)
-        self._timeout_timer.start(minutes * 60 * 1000)
+        self._timeout_timer = threading.Timer(minutes * 60, self._on_timeout)
+        self._timeout_timer.daemon = True
+        self._timeout_timer.start()
 
     def _stop_timeout(self):
-        """タイムアウトタイマー停止"""
+        """Stop timeout timer"""
         if self._timeout_timer:
-            self._timeout_timer.stop()
+            self._timeout_timer.cancel()
             self._timeout_timer = None
 
     def _on_timeout(self):
-        """タイムアウト時のコールバック"""
+        """Timeout callback"""
         logger.info("[SandboxManager] Sandbox timeout — auto-destroying")
         if self._active_sandbox and self._active_sandbox.config and self._active_sandbox.config.auto_cleanup:
             self.destroy()
@@ -566,20 +601,20 @@ class SandboxManager(QObject):
             self._set_status(SandboxStatus.STOPPED)
 
     def get_container_stats(self) -> Optional[dict]:
-        """コンテナのリソース使用状況を取得"""
+        """Get container resource usage statistics"""
         container = self._get_container()
         if not container:
             return None
         try:
             stats = container.stats(stream=False)
-            # CPU 使用率計算
+            # CPU usage calculation
             cpu_delta = stats["cpu_stats"]["cpu_usage"]["total_usage"] - \
                         stats["precpu_stats"]["cpu_usage"]["total_usage"]
             system_delta = stats["cpu_stats"]["system_cpu_usage"] - \
                            stats["precpu_stats"]["system_cpu_usage"]
             cpu_percent = (cpu_delta / system_delta) * 100.0 if system_delta > 0 else 0.0
 
-            # メモリ使用量
+            # Memory usage
             mem_usage = stats["memory_stats"].get("usage", 0)
             mem_limit = stats["memory_stats"].get("limit", 0)
             mem_mb = mem_usage / (1024 * 1024)

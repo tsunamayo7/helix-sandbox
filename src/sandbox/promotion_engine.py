@@ -1,9 +1,9 @@
-"""Helix AI Studio — Promotion Engine
+"""helix-sandbox — Promotion Engine
 
-sandbox 内の変更をホストに安全に適用する。
-差分生成、プレビュー、選択適用、バックアップ、ロールバック機能を提供。
+Safely apply sandbox changes to the host.
+Provides diff generation, preview, selective apply, backup, and rollback.
 
-SandboxBackend / SandboxManager のどちらも引数として受け付ける（後方互換）。
+Accepts both SandboxBackend and SandboxManager as arguments (backward compatible).
 """
 
 import logging

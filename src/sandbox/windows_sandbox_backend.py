@@ -1,13 +1,13 @@
-"""Helix AI Studio — Windows Sandbox バックエンド
+"""helix-sandbox — Windows Sandbox backend
 
-Windows 11 Pro/Enterprise/Education に標準搭載の Windows Sandbox を利用して
-隔離環境を提供する。Docker Desktop 不要で一般ユーザーが即座に利用可能。
+Uses Windows Sandbox (built into Windows 11 Pro/Enterprise/Education) to provide
+an isolated environment. No Docker Desktop required.
 
-制約:
-- 同時に 1 インスタンスのみ
-- エフェメラル（終了時に全データ消失、MappedFolder 経由で永続化）
-- 外部ウィンドウのみ（アプリ内埋め込み不可）
-- コンテナ内コマンド実行 API なし（24H2 以降で限定的に対応）
+Constraints:
+- Only one instance at a time
+- Ephemeral (all data lost on exit, persist via MappedFolder)
+- External window only (no in-app embedding)
+- No container exec API (limited support on 24H2+)
 """
 
 import logging
@@ -15,11 +15,10 @@ import os
 import platform
 import subprocess
 import tempfile
+import threading
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
-
-from PyQt6.QtCore import QTimer
 
 from .backend_base import BackendCapability, SandboxBackend
 from .sandbox_config import SandboxInfo, SandboxStatus
@@ -28,22 +27,21 @@ logger = logging.getLogger(__name__)
 
 
 class WindowsSandboxBackend(SandboxBackend):
-    """Windows Sandbox バックエンド"""
+    """Windows Sandbox backend"""
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self):
+        super().__init__()
         self._status = SandboxStatus.NONE
         self._wsb_path: Optional[str] = None
         self._process: Optional[subprocess.Popen] = None
         self._workspace_path: str = ""
         self._sandbox_info: Optional[SandboxInfo] = None
 
-        # プロセス監視タイマー
-        self._monitor_timer = QTimer(self)
-        self._monitor_timer.timeout.connect(self._check_process)
-        self._monitor_timer.setInterval(3000)  # 3秒間隔
+        # Process monitor timer
+        self._monitor_timer: Optional[threading.Timer] = None
+        self._monitor_interval = 3.0  # seconds
 
-    # ─── 必須メソッド ───
+    # --- Required methods ---
 
     def backend_type(self) -> str:
         return "windows_sandbox"
@@ -52,67 +50,67 @@ class WindowsSandboxBackend(SandboxBackend):
         return BackendCapability.DIFF_PROMOTE
 
     def is_available(self) -> bool:
-        """Windows Sandbox が利用可能かチェック"""
+        """Check if Windows Sandbox is available"""
         if platform.system() != "Windows":
             return False
         wsb_exe = self._get_wsb_exe_path()
         return wsb_exe.exists()
 
     def get_unavailable_reason(self) -> str:
-        """利用不可時の理由"""
+        """Return reason when unavailable"""
         if platform.system() != "Windows":
-            return "Windows Sandbox は Windows でのみ利用可能です。"
+            return "Windows Sandbox is only available on Windows."
 
         wsb_exe = self._get_wsb_exe_path()
         if not wsb_exe.exists():
             return (
-                "Windows Sandbox が有効化されていません。\n\n"
-                "【有効化手順】\n"
-                "1. 設定 → アプリ → オプション機能 → Windows のその他の機能\n"
-                "2. 「Windows サンドボックス」にチェックを入れる\n"
-                "3. PC を再起動する\n\n"
-                "※ Windows 11 Pro / Enterprise / Education が必要です。\n"
-                "※ BIOS で仮想化 (VT-x / AMD-V) を有効にしてください。"
+                "Windows Sandbox is not enabled.\n\n"
+                "How to enable:\n"
+                "1. Settings > Apps > Optional features > More Windows features\n"
+                "2. Check 'Windows Sandbox'\n"
+                "3. Restart your PC\n\n"
+                "Requires Windows 11 Pro / Enterprise / Education.\n"
+                "Enable virtualization (VT-x / AMD-V) in BIOS."
             )
 
         return ""
 
     def create(self, config) -> Optional[SandboxInfo]:
-        """Windows Sandbox を起動"""
+        """Start Windows Sandbox"""
         if not self.is_available():
             self.errorOccurred.emit(self.get_unavailable_reason())
             return None
 
-        # 既存プロセスチェック
+        # Check for existing process
         if self._is_sandbox_running():
             self.errorOccurred.emit(
-                "Windows Sandbox は既に起動中です。\n"
-                "同時に複数のインスタンスは実行できません。\n"
-                "既存の Sandbox を閉じてから再試行してください。"
+                "Windows Sandbox is already running.\n"
+                "Only one instance can run at a time.\n"
+                "Close the existing sandbox and try again."
             )
             return None
 
         self._set_status(SandboxStatus.CREATING)
 
         try:
-            # ワークスペースパス取得
+            # Get workspace path
             workspace = getattr(config, 'workspace_path', '')
             if not workspace:
                 workspace = str(Path.cwd())
             self._workspace_path = workspace
 
-            # .wsb ファイル生成
+            # Generate .wsb config file
             wsb_config = self._generate_wsb_config(config)
             self._wsb_path = self._write_wsb_file(wsb_config)
 
-            # Windows Sandbox 起動
+            # Start Windows Sandbox
             wsb_exe = str(self._get_wsb_exe_path())
             self._process = subprocess.Popen(
                 [wsb_exe, self._wsb_path],
                 creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
             )
 
-            # SandboxInfo 生成
+            # Generate SandboxInfo
             self._sandbox_info = SandboxInfo(
                 sandbox_id=f"wsb-{self._process.pid}",
                 container_name="WindowsSandbox",
@@ -123,28 +121,27 @@ class WindowsSandboxBackend(SandboxBackend):
             )
 
             self._set_status(SandboxStatus.RUNNING)
-            self._monitor_timer.start()
+            self._start_monitor()
 
             logger.info(f"[WindowsSandbox] Started (PID: {self._process.pid})")
             return self._sandbox_info
 
         except FileNotFoundError:
-            self.errorOccurred.emit("WindowsSandbox.exe が見つかりません。")
+            self.errorOccurred.emit("WindowsSandbox.exe not found.")
             self._set_status(SandboxStatus.ERROR)
             return None
         except Exception as e:
             logger.error(f"[WindowsSandbox] Start failed: {e}")
-            self.errorOccurred.emit(f"Windows Sandbox の起動に失敗しました: {e}")
+            self.errorOccurred.emit(f"Windows Sandbox failed to start: {e}")
             self._set_status(SandboxStatus.ERROR)
             return None
 
     def destroy(self) -> bool:
-        """Windows Sandbox を終了"""
-        self._monitor_timer.stop()
+        """Stop Windows Sandbox"""
+        self._stop_monitor()
 
         try:
-            # taskkill で WindowsSandbox.exe を終了
-            # v12.8.8: コンソール窓を非表示
+            # Kill WindowsSandbox.exe via taskkill
             subprocess.run(
                 ["taskkill", "/F", "/IM", "WindowsSandbox.exe"],
                 capture_output=True, timeout=10,
@@ -158,7 +155,7 @@ class WindowsSandboxBackend(SandboxBackend):
         self._sandbox_info = None
         self._set_status(SandboxStatus.STOPPED)
 
-        # 一時 .wsb ファイルを削除
+        # Delete temporary .wsb file
         self._cleanup_wsb_file()
 
         return True
@@ -166,16 +163,14 @@ class WindowsSandboxBackend(SandboxBackend):
     def get_status(self) -> SandboxStatus:
         return self._status
 
-    # ─── オプションメソッド ───
+    # --- Optional methods ---
 
     def get_diff(self) -> str:
-        """MappedFolder 経由の変更差分を検出"""
+        """Detect changes via MappedFolder"""
         if not self._workspace_path or not Path(self._workspace_path).exists():
             return ""
 
         try:
-            # git diff を使用（ワークスペースが git 管理下の場合）
-            # v12.8.8: コンソール窓を非表示
             _cflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
             result = subprocess.run(
                 ["git", "diff"],
@@ -185,7 +180,7 @@ class WindowsSandboxBackend(SandboxBackend):
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout
 
-            # git diff --cached も含む
+            # Include staged changes
             result2 = subprocess.run(
                 ["git", "diff", "--cached"],
                 capture_output=True, text=True, timeout=30,
@@ -204,10 +199,10 @@ class WindowsSandboxBackend(SandboxBackend):
     def get_workspace_path(self) -> str:
         return self._workspace_path
 
-    # ─── .wsb ファイル生成 ───
+    # --- .wsb file generation ---
 
     def _generate_wsb_config(self, config) -> str:
-        """SandboxConfig / WindowsSandboxConfig から .wsb XML を生成"""
+        """Generate .wsb XML from SandboxConfig / WindowsSandboxConfig"""
         root = ET.Element("Configuration")
 
         # VGpu
@@ -225,7 +220,7 @@ class WindowsSandboxBackend(SandboxBackend):
         # MemoryInMB
         memory_mb = getattr(config, 'memory_mb', None)
         if memory_mb is None:
-            # SandboxConfig からの変換（memory_limit "2g" → 2048）
+            # Convert from SandboxConfig (memory_limit "2g" -> 2048)
             mem_str = getattr(config, 'memory_limit', '2g')
             try:
                 if isinstance(mem_str, str) and mem_str.endswith('g'):
@@ -249,11 +244,10 @@ class WindowsSandboxBackend(SandboxBackend):
             readonly = getattr(config, 'mount_readonly', False)
             ET.SubElement(folder, "ReadOnly").text = str(readonly).lower()
 
-        # LogonCommand (wsb_pilot_agent.py をバックグラウンド起動 + explorer)
+        # LogonCommand (start wsb_pilot_agent.py in background + open explorer)
         logon_cmd = getattr(config, 'logon_command', '')
         if not logon_cmd:
             if workspace:
-                # Pilot Agent をバックグラウンド起動し、explorer でワークスペースを開く
                 logon_cmd = (
                     r'powershell -ExecutionPolicy Bypass -NoProfile -Command "'
                     r"if (Test-Path 'C:\workspace\scripts\wsb_pilot_agent.py') {"
@@ -267,12 +261,12 @@ class WindowsSandboxBackend(SandboxBackend):
         logon = ET.SubElement(root, "LogonCommand")
         ET.SubElement(logon, "Command").text = logon_cmd
 
-        # XML を文字列に変換
+        # Convert XML to string
         ET.indent(root, space="  ")
         return ET.tostring(root, encoding="unicode", xml_declaration=False)
 
     def _write_wsb_file(self, xml_content: str) -> str:
-        """一時 .wsb ファイルを書き出す"""
+        """Write temporary .wsb file"""
         temp_dir = Path(tempfile.gettempdir()) / "helix_sandbox"
         temp_dir.mkdir(exist_ok=True)
 
@@ -282,7 +276,7 @@ class WindowsSandboxBackend(SandboxBackend):
         return str(wsb_path)
 
     def _cleanup_wsb_file(self):
-        """一時 .wsb ファイルを削除"""
+        """Delete temporary .wsb file"""
         if self._wsb_path:
             try:
                 Path(self._wsb_path).unlink(missing_ok=True)
@@ -290,21 +284,41 @@ class WindowsSandboxBackend(SandboxBackend):
                 logger.debug(f"[WindowsSandboxBackend] Failed to cleanup wsb file '{self._wsb_path}': {e}")
             self._wsb_path = None
 
-    # ─── プロセス監視 ───
+    # --- Process monitoring ---
+
+    def _start_monitor(self):
+        """Start periodic process monitoring"""
+        self._stop_monitor()
+        self._schedule_monitor()
+
+    def _schedule_monitor(self):
+        """Schedule the next monitor check"""
+        self._monitor_timer = threading.Timer(self._monitor_interval, self._check_process)
+        self._monitor_timer.daemon = True
+        self._monitor_timer.start()
+
+    def _stop_monitor(self):
+        """Stop process monitoring"""
+        if self._monitor_timer:
+            self._monitor_timer.cancel()
+            self._monitor_timer = None
 
     def _check_process(self):
-        """Windows Sandbox プロセスの生存確認"""
+        """Check if Windows Sandbox process is still alive"""
         if not self._is_sandbox_running():
             logger.info("[WindowsSandbox] Process terminated (detected by monitor)")
-            self._monitor_timer.stop()
+            self._monitor_timer = None
             self._process = None
             self._sandbox_info = None
             self._set_status(SandboxStatus.STOPPED)
             self._cleanup_wsb_file()
             self.statusChanged.emit("stopped")
+        else:
+            # Reschedule next check
+            self._schedule_monitor()
 
     def _is_sandbox_running(self) -> bool:
-        """WindowsSandbox.exe が実行中かチェック"""
+        """Check if WindowsSandbox.exe is running"""
         try:
             result = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq WindowsSandbox.exe", "/NH"],
@@ -315,15 +329,15 @@ class WindowsSandboxBackend(SandboxBackend):
         except Exception:
             return False
 
-    # ─── ユーティリティ ───
+    # --- Utilities ---
 
     @staticmethod
     def _get_wsb_exe_path() -> Path:
-        """WindowsSandbox.exe のパスを返す"""
+        """Return path to WindowsSandbox.exe"""
         system_root = os.environ.get("SystemRoot", r"C:\Windows")
         return Path(system_root) / "System32" / "WindowsSandbox.exe"
 
     def _set_status(self, status: SandboxStatus):
-        """状態を更新してシグナルを発火"""
+        """Update status and fire signal"""
         self._status = status
         self.statusChanged.emit(status.value)

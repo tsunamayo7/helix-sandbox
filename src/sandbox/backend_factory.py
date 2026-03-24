@@ -1,7 +1,7 @@
-"""Helix AI Studio — バックエンドファクトリー
+"""helix-sandbox — Backend factory
 
-Auto モード: Windows Sandbox → Docker → None の順に自動選択。
-手動指定: "windows_sandbox" / "docker" で明示的に選択。
+Auto mode: Windows Sandbox -> Docker -> None (in order of priority).
+Manual: explicitly select "windows_sandbox" / "docker".
 """
 
 import logging
@@ -13,21 +13,21 @@ logger = logging.getLogger(__name__)
 
 
 class BackendFactory:
-    """Sandbox バックエンドのファクトリー"""
+    """Sandbox backend factory"""
 
     @staticmethod
-    def auto_select(parent=None) -> Optional[SandboxBackend]:
-        """利用可能なバックエンドを自動選択
+    def auto_select() -> Optional[SandboxBackend]:
+        """Auto-select an available backend
 
-        優先順位:
-        1. Windows Sandbox（追加ランタイム不要）
-        2. Docker（Docker Desktop / Rancher Desktop 必要）
-        3. None（どちらも利用不可）
+        Priority:
+        1. Windows Sandbox (no additional runtime required)
+        2. Docker (Docker Desktop / Rancher Desktop required)
+        3. None (neither available)
         """
         # 1. Windows Sandbox
         try:
             from .windows_sandbox_backend import WindowsSandboxBackend
-            wsb = WindowsSandboxBackend(parent=parent)
+            wsb = WindowsSandboxBackend()
             if wsb.is_available():
                 logger.info("[BackendFactory] Auto-selected: Windows Sandbox")
                 return wsb
@@ -38,7 +38,7 @@ class BackendFactory:
         # 2. Docker
         try:
             from .docker_backend import DockerBackend
-            docker = DockerBackend(parent=parent)
+            docker = DockerBackend()
             if docker.is_available():
                 logger.info("[BackendFactory] Auto-selected: Docker")
                 return docker
@@ -46,36 +46,35 @@ class BackendFactory:
         except Exception as e:
             logger.debug(f"[BackendFactory] Docker check failed: {e}")
 
-        # 3. どちらも不可
+        # 3. Neither available
         logger.warning("[BackendFactory] No sandbox backend available")
         return None
 
     @staticmethod
-    def create(backend_type: str, parent=None) -> Optional[SandboxBackend]:
-        """指定タイプのバックエンドを生成
+    def create(backend_type: str) -> Optional[SandboxBackend]:
+        """Create a backend of the specified type
 
         Args:
             backend_type: "auto" / "windows_sandbox" / "docker"
-            parent: QObject 親
 
         Returns:
-            SandboxBackend インスタンス、または None
+            SandboxBackend instance, or None
         """
         if backend_type == "auto":
-            return BackendFactory.auto_select(parent=parent)
+            return BackendFactory.auto_select()
 
         if backend_type == "windows_sandbox":
             from .windows_sandbox_backend import WindowsSandboxBackend
-            backend = WindowsSandboxBackend(parent=parent)
+            backend = WindowsSandboxBackend()
             if backend.is_available():
                 return backend
             logger.warning("[BackendFactory] Windows Sandbox requested but not available")
-            return backend  # 利用不可でもインスタンスは返す（理由表示のため）
+            return backend  # Return instance anyway (for displaying reason)
 
         if backend_type == "docker":
             from .docker_backend import DockerBackend
-            backend = DockerBackend(parent=parent)
-            return backend  # Docker は接続遅延があるので利用可否は後でチェック
+            backend = DockerBackend()
+            return backend  # Docker has connection latency, check availability later
 
         logger.warning(f"[BackendFactory] Unknown backend type: {backend_type}")
         return None

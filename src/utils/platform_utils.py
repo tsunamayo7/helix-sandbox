@@ -1,8 +1,6 @@
-"""
-platform_utils.py — クロスプラットフォーム共通ヘルパー
+"""helix-sandbox — Cross-platform utility helpers
 
-Windows / macOS / Linux でそれぞれ異なる実装が必要な処理を一元管理する。
-将来のプラットフォーム追加時は elif ブランチを追加するだけでよい。
+Centralizes platform-specific implementations for Windows / macOS / Linux.
 """
 
 import os
@@ -13,7 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def show_error_dialog(message: str, title: str = "Helix AI Studio - Error") -> None:
+def show_error_dialog(message: str, title: str = "helix-sandbox - Error") -> None:
     """クロスプラットフォームのエラーダイアログを表示する。
 
     Args:

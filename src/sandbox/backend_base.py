@@ -1,8 +1,8 @@
-"""Helix AI Studio — Sandbox バックエンド抽象基底クラス
+"""helix-sandbox — Sandbox backend abstract base class
 
-全バックエンド（Windows Sandbox / Docker / Guacamole）が実装する共通インターフェース。
-BackendCapability フラグでバックエンド固有の機能有無を宣言し、
-VirtualDesktopTab が Capability に応じて UI を動的に切り替える。
+Common interface for all backends (Windows Sandbox / Docker / Guacamole).
+BackendCapability flags declare backend-specific features,
+allowing the server to adapt behavior dynamically.
 """
 
 import logging
@@ -10,126 +10,138 @@ from abc import abstractmethod
 from enum import Flag, auto
 from typing import Optional
 
-from PyQt6.QtCore import QObject, pyqtSignal
-
-from .sandbox_config import SandboxConfig, SandboxInfo, SandboxStatus
+from .sandbox_config import SandboxInfo, SandboxStatus
 
 logger = logging.getLogger(__name__)
 
 
+class _Signal:
+    """Simple callback-based signal replacement for PyQt6 signals."""
+
+    def __init__(self):
+        self._callbacks = []
+
+    def connect(self, callback):
+        self._callbacks.append(callback)
+
+    def emit(self, *args):
+        for cb in self._callbacks:
+            try:
+                cb(*args)
+            except Exception:
+                pass
+
+
 class BackendCapability(Flag):
-    """バックエンドが提供する機能フラグ"""
+    """Feature flags provided by a backend"""
     NONE          = 0
-    EMBED_VIEW    = auto()   # アプリ内 NoVNC/WebView 埋め込み
-    FILE_BROWSE   = auto()   # コンテナ内ファイル閲覧
-    EXEC_COMMAND  = auto()   # コンテナ内コマンド実行
-    SCREENSHOT    = auto()   # スクリーンショット取得
-    DIFF_PROMOTE  = auto()   # 差分検出＋本番適用 (Promotion)
-    STATS         = auto()   # CPU/RAM リソース統計
-    NETWORKING    = auto()   # ネットワークモード設定
+    EMBED_VIEW    = auto()   # In-app NoVNC/WebView embedding
+    FILE_BROWSE   = auto()   # File browsing inside container
+    EXEC_COMMAND  = auto()   # Command execution inside container
+    SCREENSHOT    = auto()   # Screenshot capture
+    DIFF_PROMOTE  = auto()   # Diff detection + promotion
+    STATS         = auto()   # CPU/RAM resource statistics
+    NETWORKING    = auto()   # Network mode configuration
 
 
-class SandboxBackend(QObject):
-    """Sandbox バックエンドの抽象基底クラス
+class SandboxBackend:
+    """Abstract base class for sandbox backends
 
-    全バックエンドはこのクラスを継承し、
-    backend_type / capabilities / is_available / create / destroy / get_status を実装する。
-    オプション機能は capabilities() に応じてオーバーライドする。
+    All backends inherit this class and implement:
+    backend_type / capabilities / is_available / create / destroy / get_status.
+    Optional features are overridden based on capabilities().
     """
 
-    # シグナル（VirtualDesktopTab が接続する）
-    statusChanged = pyqtSignal(str)
-    outputReceived = pyqtSignal(str)
-    errorOccurred = pyqtSignal(str)
+    def __init__(self):
+        self.statusChanged = _Signal()
+        self.outputReceived = _Signal()
+        self.errorOccurred = _Signal()
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-    # ─── 必須メソッド ───
+    # --- Required methods ---
 
     @abstractmethod
     def backend_type(self) -> str:
-        """バックエンド識別名を返す (例: "windows_sandbox", "docker")"""
+        """Return backend identifier (e.g. "windows_sandbox", "docker")"""
         ...
 
     @abstractmethod
     def capabilities(self) -> BackendCapability:
-        """このバックエンドが提供する機能フラグを返す"""
+        """Return feature flags provided by this backend"""
         ...
 
     @abstractmethod
     def is_available(self) -> bool:
-        """バックエンドが利用可能かチェック"""
+        """Check if the backend is available"""
         ...
 
     @abstractmethod
     def get_unavailable_reason(self) -> str:
-        """利用不可時の理由を人間が読める形で返す"""
+        """Return human-readable reason when unavailable"""
         ...
 
     @abstractmethod
     def create(self, config) -> Optional[SandboxInfo]:
-        """Sandbox を作成・起動する"""
+        """Create and start a sandbox"""
         ...
 
     @abstractmethod
     def destroy(self) -> bool:
-        """Sandbox を停止・破棄する"""
+        """Stop and destroy the sandbox"""
         ...
 
     @abstractmethod
     def get_status(self) -> SandboxStatus:
-        """現在の Sandbox 状態を返す"""
+        """Return current sandbox status"""
         ...
 
-    # ─── オプションメソッド（Capability に応じてオーバーライド）───
+    # --- Optional methods (override based on capability) ---
 
     def get_diff(self) -> str:
-        """Sandbox 内の変更を unified diff 形式で取得 (DIFF_PROMOTE)"""
+        """Get changes in unified diff format (DIFF_PROMOTE)"""
         return ""
 
     def screenshot(self) -> Optional[bytes]:
-        """スクリーンショットを PNG バイトで返す (SCREENSHOT)"""
+        """Return screenshot as PNG bytes (SCREENSHOT)"""
         return None
 
     def list_files(self, path: str = "/workspace") -> list:
-        """指定パスのファイル一覧を返す (FILE_BROWSE)"""
+        """List files at the specified path (FILE_BROWSE)"""
         return []
 
     def read_file(self, path: str) -> bytes:
-        """指定パスのファイル内容を返す (FILE_BROWSE)"""
+        """Read file content at the specified path (FILE_BROWSE)"""
         return b""
 
     def get_container_stats(self) -> Optional[dict]:
-        """CPU/RAM 統計を dict で返す (STATS)"""
+        """Return CPU/RAM statistics as dict (STATS)"""
         return None
 
     def get_vnc_url(self) -> str:
-        """NoVNC / リモートデスクトップの URL を返す (EMBED_VIEW)"""
+        """Return NoVNC / remote desktop URL (EMBED_VIEW)"""
         return ""
 
     def reset_connection(self):
-        """キャッシュ済み接続をリセット（再接続用）"""
+        """Reset cached connection (for reconnection)"""
         pass
 
-    # ─── Docker 互換メソッド（soloAI タブとの後方互換）───
+    # --- Docker-compatible methods (backward compatibility) ---
 
     def check_image_exists(self) -> bool:
-        """Docker イメージ存在チェック（Docker バックエンドのみ有効）"""
+        """Check if Docker image exists (Docker backend only)"""
         return False
 
     def build_image(self, progress_callback=None) -> bool:
-        """Docker イメージビルド（Docker バックエンドのみ有効）"""
+        """Build Docker image (Docker backend only)"""
         return False
 
     def remove_image(self, force: bool = True) -> bool:
-        """Docker イメージ削除（Docker バックエンドのみ有効）"""
+        """Remove Docker image (Docker backend only)"""
         return False
 
     def exec_in_sandbox(self, command: str) -> Optional[str]:
-        """Sandbox 内でコマンド実行（EXEC_COMMAND）"""
+        """Execute command inside sandbox (EXEC_COMMAND)"""
         return None
 
     def get_workspace_path(self) -> str:
-        """ホスト側ワークスペースパスを返す"""
+        """Return host-side workspace path"""
         return ""

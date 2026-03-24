@@ -1,4 +1,4 @@
-"""Helix AI Studio — Circuit Breaker for Sandbox Connections
+"""helix-sandbox — Circuit Breaker for Sandbox Connections
 
 Circuit Breaker pattern implementation to handle sandbox connection failures gracefully.
 When failures exceed threshold, the circuit opens and rejects requests temporarily,
@@ -11,7 +11,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Any, Optional
+from typing import Callable, Any
 
 logger = logging.getLogger(__name__)
 

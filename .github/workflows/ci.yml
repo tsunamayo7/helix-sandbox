@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Install dependencies
+        run: uv sync --dev
+      - name: Syntax check
+        run: |
+          uv run python -m py_compile server.py
+          uv run python -m py_compile main.py
+          Get-ChildItem -Recurse -Filter "*.py" -Path "src" | ForEach-Object { uv run python -m py_compile $_.FullName }
+        shell: pwsh
+      - name: Run tests
+        run: uv run python -m pytest tests/ -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Install dependencies
+        run: uv sync --dev
+      - name: Ruff check
+        run: uv run ruff check src/ server.py tests/ --ignore E501

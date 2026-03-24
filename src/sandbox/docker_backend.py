@@ -1,42 +1,42 @@
-"""Helix AI Studio — Docker バックエンド（任意 / アダプター）
+"""helix-sandbox — Docker backend (optional / adapter)
 
-Docker 互換ランタイム (Docker Desktop / Rancher Desktop) 用のバックエンド。
-既存の SandboxManager をラップして SandboxBackend インターフェースに適合させる。
+Backend for Docker-compatible runtimes (Docker Desktop / Rancher Desktop).
+Wraps the existing SandboxManager to conform to the SandboxBackend interface.
 """
 
 import logging
 from typing import Optional
 
 from .backend_base import BackendCapability, SandboxBackend
-from .sandbox_config import SandboxConfig, SandboxInfo, SandboxStatus
+from .sandbox_config import SandboxInfo, SandboxStatus
 from .sandbox_manager import SandboxManager
 
 logger = logging.getLogger(__name__)
 
 
 class DockerBackend(SandboxBackend):
-    """SandboxManager ラッパー — SandboxBackend インターフェースに適合
+    """SandboxManager wrapper — conforms to SandboxBackend interface
 
-    Docker 互換ランタイム (Docker Desktop / Rancher Desktop) 向けの任意バックエンド。
-    全 capability（埋め込みビュー、ファイル閲覧、コマンド実行、スクリーンショット、
-    Promotion、リソース統計、ネットワーク設定）を提供する。
+    Optional backend for Docker-compatible runtimes (Docker Desktop / Rancher Desktop).
+    Provides all capabilities: embed view, file browsing, command execution,
+    screenshot, promotion, resource stats, and network configuration.
     """
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._manager = SandboxManager(parent=self)
+    def __init__(self):
+        super().__init__()
+        self._manager = SandboxManager()
 
-        # SandboxManager のシグナルを転送
-        self._manager.statusChanged.connect(self.statusChanged)
-        self._manager.errorOccurred.connect(self.errorOccurred)
-        self._manager.outputReceived.connect(self.outputReceived)
+        # Forward SandboxManager signals
+        self._manager.statusChanged.connect(lambda *a: self.statusChanged.emit(*a))
+        self._manager.errorOccurred.connect(lambda *a: self.errorOccurred.emit(*a))
+        self._manager.outputReceived.connect(lambda *a: self.outputReceived.emit(*a))
 
     @property
     def manager(self) -> SandboxManager:
-        """内部 SandboxManager への直接参照（互換性用）"""
+        """Direct reference to internal SandboxManager (for compatibility)"""
         return self._manager
 
-    # ─── 必須メソッド ───
+    # --- Required methods ---
 
     def backend_type(self) -> str:
         return "docker"
@@ -67,7 +67,7 @@ class DockerBackend(SandboxBackend):
     def get_status(self) -> SandboxStatus:
         return self._manager.get_status()
 
-    # ─── オプションメソッド（SandboxManager に委譲）───
+    # --- Optional methods (delegated to SandboxManager) ---
 
     def get_diff(self) -> str:
         return self._manager.get_diff()
@@ -81,11 +81,8 @@ class DockerBackend(SandboxBackend):
             return result["entries"]
         return []
 
-    def read_file(self, path: str) -> bytes:
-        result = self._manager.read_file(path)
-        if "content" in result:
-            return result["content"].encode("utf-8")
-        return b""
+    def read_file(self, path: str) -> dict | bytes:
+        return self._manager.read_file(path)
 
     def get_container_stats(self) -> Optional[dict]:
         return self._manager.get_container_stats()
@@ -97,7 +94,7 @@ class DockerBackend(SandboxBackend):
     def reset_connection(self):
         self._manager.reset_connection()
 
-    # ─── Docker 固有メソッド ───
+    # --- Docker-specific methods ---
 
     def check_image_exists(self) -> bool:
         return self._manager.check_image_exists()

@@ -1,7 +1,7 @@
-"""Helix AI Studio — Sandbox パッケージ
+"""helix-sandbox — Sandbox package
 
-Virtual Desktop 用バックエンド群。
-BackendFactory が Windows Sandbox (標準) → Docker 互換ランタイム (任意) の順に自動選択する。
+Backend collection for sandbox environments.
+BackendFactory auto-selects: Windows Sandbox (built-in) -> Docker (optional).
 """
 
 from .sandbox_config import SandboxConfig, SandboxInfo, SandboxStatus, WindowsSandboxConfig

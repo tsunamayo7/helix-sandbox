@@ -1,6 +1,6 @@
-"""
-Helix AI Studio - Subprocess Utilities (v8.5.0 Patch 2)
-Windows上でサブプロセスのコンソールウィンドウを非表示にして実行するユーティリティ
+"""helix-sandbox — Subprocess Utilities
+
+Utility for running subprocesses with hidden console windows on Windows.
 """
 
 import subprocess

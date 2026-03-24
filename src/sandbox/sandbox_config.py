@@ -1,4 +1,4 @@
-"""Helix AI Studio — Sandbox 設定・データクラス定義"""
+"""helix-sandbox — Sandbox configuration and data class definitions"""
 
 from dataclasses import dataclass, field
 from datetime import datetime
