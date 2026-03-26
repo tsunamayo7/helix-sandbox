@@ -1,29 +1,65 @@
+<div align="center">
+
 # helix-sandbox
 
-Secure sandbox MCP server for AI agents. Run code, edit files, and operate GUI in isolated Docker or Windows Sandbox environments.
+**Secure sandbox MCP server for AI agents — Docker and Windows Sandbox backends**
+
+Give your AI agent a safe playground to execute code, edit files, and interact with a GUI desktop — without risking your host system.
 
 [![CI](https://github.com/tsunamayo7/helix-sandbox/actions/workflows/ci.yml/badge.svg)](https://github.com/tsunamayo7/helix-sandbox/actions/workflows/ci.yml)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![MCP](https://img.shields.io/badge/MCP-compatible-8A2BE2?logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxMCIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIi8+PC9zdmc+)](https://modelcontextprotocol.io/)
+[![Docker](https://img.shields.io/badge/Docker-supported-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![Windows Sandbox](https://img.shields.io/badge/Windows_Sandbox-supported-0078D6?logo=windows&logoColor=white)](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-overview)
+[![GitHub stars](https://img.shields.io/github/stars/tsunamayo7/helix-sandbox?style=social)](https://github.com/tsunamayo7/helix-sandbox/stargazers)
 
-## What It Does
+</div>
 
-helix-sandbox gives AI agents (Claude Code, Codex CLI, Open WebUI, etc.) a **safe, isolated environment** to execute code, read/write files, and even interact with a GUI desktop — without touching your host system.
+---
+
+## Why helix-sandbox?
+
+Running untrusted code from AI agents on your host machine is dangerous. Cloud sandboxes cost money and require internet. **helix-sandbox** solves both problems:
+
+| | helix-sandbox | Cloud sandboxes (E2B, Cua, Daytona) |
+|---|:---:|:---:|
+| **Runs locally** | Yes | No |
+| **Zero cloud cost** | Yes | Paid |
+| **Works offline** | Yes | No |
+| **Docker backend** | Yes | Varies |
+| **Windows Sandbox backend** | Yes | No |
+| **GUI automation** | Yes | Limited |
+| **MCP protocol** | Yes | No |
+
+**What makes helix-sandbox unique:**
+
+- **Dual backend** — Docker (Linux containers) + Windows Sandbox (native Windows 11) in one server
+- **AI-safety focused** — Path traversal protection, circuit breaker, network isolation
+- **10 MCP tools** — Create, destroy, execute, file I/O, screenshots, diffs, stats
+- **GUI desktop access** — VNC/noVNC (Docker) or native window (Windows Sandbox)
+- **Promotion engine** — Safely review and apply sandbox changes back to the host
+- **No vendor lock-in** — Open source, local-first, works with any MCP client
+
+## How It Works
 
 ```
-AI Agent (Claude Code / Codex CLI / Open WebUI)
-            | MCP Protocol
-    helix-sandbox server
-            |
-   +--------+--------+
-   Docker Desktop    Windows Sandbox
-   (Linux container) (Windows 11 native)
+AI Agent (Claude Code / Codex CLI / Open WebUI / ...)
+                    | MCP Protocol
+            helix-sandbox server
+                    |
+       +------------+------------+
+       Docker Desktop            Windows Sandbox
+       (Linux container)         (Windows 11 native)
+       - Multiple instances      - Ephemeral by design
+       - Configurable persist    - Native Windows GUI
+       - VNC desktop access      - Pilot Bridge GUI
 ```
 
-## Features
+## MCP Tools
 
-| MCP Tool | Description |
-|----------|-------------|
+| Tool | Description |
+|------|-------------|
 | `create_sandbox` | Create and start an isolated sandbox |
 | `destroy_sandbox` | Stop and remove the sandbox |
 | `sandbox_status` | Get current sandbox state and backend info |
@@ -35,7 +71,7 @@ AI Agent (Claude Code / Codex CLI / Open WebUI)
 | `get_diff` | Get workspace change diff |
 | `container_stats` | CPU/RAM usage statistics |
 
-### Backend Comparison
+## Backend Comparison
 
 | Feature | Docker | Windows Sandbox |
 |---------|:------:|:---------------:|
@@ -50,7 +86,7 @@ AI Agent (Claude Code / Codex CLI / Open WebUI)
 
 ## Quick Start
 
-### Installation
+### 1. Install
 
 ```bash
 git clone https://github.com/tsunamayo7/helix-sandbox.git
@@ -58,7 +94,7 @@ cd helix-sandbox
 uv sync
 ```
 
-### Build Docker Image (Docker backend)
+### 2. Build Docker Image (Docker backend)
 
 ```bash
 # Windows (PowerShell)
@@ -68,9 +104,12 @@ uv sync
 ./scripts/build_sandbox_image.sh
 ```
 
-### Claude Code Integration
+### 3. Connect to Your AI Agent
 
-Add to your Claude Code MCP settings:
+<details>
+<summary><strong>Claude Code</strong></summary>
+
+Add to your Claude Code MCP settings (`~/.claude/settings.json`):
 
 ```json
 {
@@ -83,14 +122,73 @@ Add to your Claude Code MCP settings:
 }
 ```
 
+</details>
+
+<details>
+<summary><strong>Claude Desktop</strong></summary>
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "helix-sandbox": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/helix-sandbox", "run", "server.py"]
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Codex CLI / Other MCP Clients</strong></summary>
+
+Any MCP-compatible client can connect. Point it to:
+
+```bash
+uv --directory /path/to/helix-sandbox run server.py
+```
+
+</details>
+
 ## Usage Examples
 
 Once connected, ask your AI agent:
 
-- *"Create a sandbox and run `python --version` inside it"*
-- *"Write a Python script to the sandbox, execute it, and show me the output"*
-- *"Take a screenshot of the sandbox desktop"*
-- *"Show me what files changed in the sandbox"*
+```
+"Create a sandbox and run python --version inside it"
+```
+
+```
+"Write a Python script to the sandbox that generates a Fibonacci sequence, execute it, and show me the output"
+```
+
+```
+"Take a screenshot of the sandbox desktop"
+```
+
+```
+"Show me what files changed in the sandbox, then apply the changes to my host"
+```
+
+```
+"Create a sandbox, install numpy, run a matrix multiplication benchmark, and show me the stats"
+```
+
+## Compatible MCP Clients
+
+helix-sandbox works with any client that supports the [Model Context Protocol](https://modelcontextprotocol.io/):
+
+| Client | Status | Notes |
+|--------|--------|-------|
+| [Claude Code](https://claude.ai/code) | Tested | Primary development target |
+| [Claude Desktop](https://claude.ai/download) | Compatible | Via MCP config |
+| [Codex CLI](https://github.com/openai/codex) | Compatible | Via MCP config |
+| [Open WebUI](https://github.com/open-webui/open-webui) | Compatible | Via MCP proxy |
+| [Continue](https://github.com/continuedev/continue) | Compatible | Via MCP config |
+| Any MCP client | Compatible | Standard MCP protocol |
 
 ## Architecture
 
@@ -123,12 +221,12 @@ helix-sandbox/
 
 ### Key Design Patterns
 
-- **Backend Abstraction**: `BackendCapability` flags adapt behavior per backend
-- **Dual Backend**: Docker for Linux containers, Windows Sandbox for native Windows
-- **2-Stage Fallback**: Docker SDK to CLI fallback for resilience
-- **Path Traversal Protection**: All file operations validate against directory traversal
-- **Circuit Breaker**: Connection protection for unreliable Docker connections
-- **Promotion Engine**: Safely apply sandbox changes back to the host
+- **Backend Abstraction** — `BackendCapability` flags adapt behavior per backend
+- **Dual Backend** — Docker for Linux containers, Windows Sandbox for native Windows
+- **2-Stage Fallback** — Docker SDK to CLI fallback for resilience
+- **Path Traversal Protection** — All file operations validate against directory traversal attacks
+- **Circuit Breaker** — Connection protection for unreliable Docker connections
+- **Promotion Engine** — Safely apply sandbox changes back to the host
 
 ## Comparison with Alternatives
 
@@ -141,15 +239,21 @@ helix-sandbox/
 | GUI automation | Yes | - | Yes | - |
 | No cloud costs | Yes | Paid | Paid | Paid |
 | Offline capable | Yes | - | - | - |
-
-**Unique combination**: Local + Docker + Windows Sandbox + MCP + GUI automation + zero cloud cost
+| Open source | MIT | Partial | Yes | Yes |
 
 ## Development
 
 ```bash
+# Install dev dependencies
 uv sync --dev
+
+# Run tests
 uv run python -m pytest tests/ -v
+
+# Lint
 uv run ruff check src/ server.py tests/
+
+# System info
 uv run python main.py --info
 ```
 
@@ -159,6 +263,37 @@ uv run python main.py --info
 - **Docker backend**: Docker Desktop or Rancher Desktop
 - **Windows Sandbox backend**: Windows 11 Pro/Enterprise/Education
 
+## Related Projects
+
+| Project | Description |
+|---------|-------------|
+| [helix-pilot](https://github.com/tsunamayo7/helix-pilot) | GUI automation MCP server — control any desktop app with AI |
+| [helix-ai-studio](https://github.com/tsunamayo7/helix-ai-studio) | All-in-one AI chat studio with multi-provider support |
+
+## Contributing
+
+Contributions are welcome! Feel free to:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes
+4. Push to the branch
+5. Open a Pull Request
+
+Bug reports and feature requests via [Issues](https://github.com/tsunamayo7/helix-sandbox/issues) are also appreciated.
+
 ## License
 
-MIT
+[MIT](LICENSE)
+
+---
+
+<div align="center">
+
+**If you find helix-sandbox useful, please consider giving it a star!**
+
+[![Star this repo](https://img.shields.io/github/stars/tsunamayo7/helix-sandbox?style=social)](https://github.com/tsunamayo7/helix-sandbox)
+
+Built with [FastMCP](https://github.com/jlowin/fastmcp) and [Model Context Protocol](https://modelcontextprotocol.io/)
+
+</div>
