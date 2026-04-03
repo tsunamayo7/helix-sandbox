@@ -267,8 +267,10 @@ uv run python main.py --info
 
 | Project | Description |
 |---------|-------------|
-| [helix-pilot](https://github.com/tsunamayo7/helix-pilot) | GUI automation MCP server — control any desktop app with AI |
-| [helix-ai-studio](https://github.com/tsunamayo7/helix-ai-studio) | All-in-one AI chat studio with multi-provider support |
+| [helix-ai-studio](https://github.com/tsunamayo7/helix-ai-studio) | All-in-one AI chat studio with 7 providers, RAG, MCP tools, and pipeline |
+| [helix-pilot](https://github.com/tsunamayo7/helix-pilot) | GUI automation MCP server — AI controls Windows desktop via local Vision LLM |
+| [helix-agent](https://github.com/tsunamayo7/helix-agent) | Extend Claude Code with local Ollama models — cut token costs by 60-80% |
+| [claude-code-codex-agents](https://github.com/tsunamayo7/claude-code-codex-agents) | MCP bridge to Codex CLI (GPT-5.4) with structured JSONL traces |
 
 ## Contributing
 
